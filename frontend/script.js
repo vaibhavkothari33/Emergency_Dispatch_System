@@ -12,13 +12,15 @@ const availabilityTable = document.getElementById('availabilityTable').querySele
 // State
 let zipCodes = [];
 let availability = [];
+let distanceGraph = {}; // Graph representation of ZIP code connections
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         await Promise.all([
             loadZipCodes(),
-            loadAvailability()
+            loadAvailability(),
+            loadDistances() // Load distances between connected ZIP codes
         ]);
         
         // Set up event listeners
@@ -32,17 +34,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 // Load ZIP Codes for dropdown
 async function loadZipCodes() {
     try {
-        const response = await fetch(`${API_BASE_URL}/zipcodes`, {
+        const response = await fetchWithRetry(`${API_BASE_URL}/zipcodes`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json'
             }
         });
-        
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
-        }
         
         zipCodes = await response.json();
         
@@ -58,25 +55,64 @@ async function loadZipCodes() {
         });
     } catch (error) {
         console.error('Error loading ZIP codes:', error);
-        showError('Failed to load ZIP codes. Please refresh the page.');
+        showError(`Failed to load ZIP codes: ${error.message}. Please refresh the page.`);
         throw error;
     }
 }
 
-// Load vehicle availability data
-async function loadAvailability() {
+// Load distances between ZIP codes to build the graph
+async function loadDistances() {
     try {
-        const response = await fetch(`${API_BASE_URL}/availability`, {
+        const response = await fetchWithRetry(`${API_BASE_URL}/distances`, {
             method: 'GET',
             headers: {
                 'Accept': 'application/json'
             }
         });
         
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
-        }
+        const distances = await response.json();
+        buildDistanceGraph(distances);
+        console.log('Distance graph built successfully:', distanceGraph);
+    } catch (error) {
+        console.error('Error loading distances:', error);
+        showError('Failed to load distance data. Optimal routing may not be available.');
+    }
+}
+
+// Build the distance graph from the API response
+function buildDistanceGraph(distances) {
+    distanceGraph = {};
+    
+    // Initialize empty arrays for each ZIP code
+    zipCodes.forEach(zip => {
+        distanceGraph[zip.zip_code] = [];
+    });
+    
+    // Add connections between ZIP codes
+    distances.forEach(connection => {
+        // Add bidirectional edges (assuming connections work both ways)
+        distanceGraph[connection.from_zip].push({
+            zipCode: connection.to_zip,
+            distance: connection.distance
+        });
+        
+        // If distances are directional, you might want to comment out this part
+        distanceGraph[connection.to_zip].push({
+            zipCode: connection.from_zip,
+            distance: connection.distance
+        });
+    });
+}
+
+// Load vehicle availability data
+async function loadAvailability() {
+    try {
+        const response = await fetchWithRetry(`${API_BASE_URL}/availability`, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
         
         availability = await response.json();
         updateAvailabilityTable();
@@ -152,42 +188,63 @@ async function handleDispatch(event) {
     pathResult.style.display = 'none';
     
     try {
-        const response = await fetch(`${API_BASE_URL}/dispatch`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
-            },
-            body: JSON.stringify({ zipCode, vehicleType })
-        });
+        // Check if the vehicle is available at the requested ZIP code
+        const vehicleProperty = getVehicleProperty(vehicleType);
+        const localAvailability = availability.find(item => item.zip_code === zipCode);
         
-        const result = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(result.error || 'Failed to dispatch vehicle');
-        }
-        
-        // Show success message
-        dispatchResult.innerHTML = `
-            <p class="success">${result.message}</p>
-        `;
-        
-        // Show path information if available
-        if (result.path && result.distance) {
-            pathResult.style.display = 'block';
+        if (localAvailability && localAvailability[vehicleProperty] > 0) {
+            // Local dispatch logic - no changes needed
+            const response = await fetch(`${API_BASE_URL}/dispatch`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ zipCode, vehicleType })
+            });
             
-            // Format path details
-            const pathDetails = result.path.map(point => 
-                `${point.location_name} (${point.zip_code})`
-            ).join(' → ');
+            const result = await response.json();
             
-            pathResult.innerHTML = `
-                <p><strong>Dispatch Path:</strong></p>
-                <p>${pathDetails}</p>
-                <p><strong>Total Distance:</strong> ${result.distance.toFixed(1)} miles</p>
-            `;
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to dispatch vehicle');
+            }
+            
+            displayDispatchResult(result);
         } else {
-            pathResult.style.display = 'none';
+            // Find nearest available vehicle
+            console.log(`No ${vehicleType} available at ${zipCode}, searching nearby locations...`);
+            const nearestResult = await findNearestVehicle(zipCode, vehicleType);
+            
+            if (!nearestResult) {
+                throw new Error(`No ${vehicleType} is available in any location.`);
+            }
+            
+            // Send dispatch request with the nearest vehicle's information
+            const response = await fetch(`${API_BASE_URL}/dispatch-from-nearest`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    destinationZipCode: zipCode,
+                    sourceZipCode: nearestResult.sourceZipCode,
+                    vehicleType: vehicleType,
+                    path: nearestResult.path
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to dispatch vehicle from nearest location');
+            }
+            
+            displayDispatchResult({
+                message: `${vehicleType} dispatched from ${nearestResult.sourceLocationName} to ${nearestResult.destinationLocationName}`,
+                path: nearestResult.pathDetails,
+                distance: nearestResult.totalDistance
+            });
         }
         
         // Refresh availability data after successful dispatch
@@ -198,16 +255,234 @@ async function handleDispatch(event) {
     }
 }
 
+// Display dispatch result
+function displayDispatchResult(result) {
+    // Show success message
+    dispatchResult.innerHTML = `
+        <p class="success">${result.message || 'Vehicle successfully dispatched!'}</p>
+    `;
+    
+    // Show path information if available
+    if (result.path) {
+        pathResult.style.display = 'block';
+        
+        let pathDetails;
+        
+        if (Array.isArray(result.path)) {
+            // Format path details if it's an array of objects
+            pathDetails = result.path.map(point => 
+                `${point.location_name || point.locationName} (${point.zip_code || point.zipCode})`
+            ).join(' → ');
+        } else {
+            // If path is already formatted
+            pathDetails = result.path;
+        }
+        
+        pathResult.innerHTML = `
+            <p><strong>Dispatch Path:</strong></p>
+            <p>${pathDetails}</p>
+            <p><strong>Total Distance:</strong> ${result.distance.toFixed(1)} miles</p>
+            <p><strong>Estimated Arrival Time:</strong> ${calculateEstimatedArrival(result.distance)}</p>
+        `;
+    } else {
+        pathResult.style.display = 'none';
+    }
+}
+
+// Calculate estimated arrival time based on distance
+function calculateEstimatedArrival(distanceMiles) {
+    // Assume average speed of emergency vehicles is 35 mph
+    const averageSpeed = 35; 
+    const timeHours = distanceMiles / averageSpeed;
+    const timeMinutes = Math.round(timeHours * 60);
+    
+    return `${timeMinutes} minutes`;
+}
+
 // Show error message
 function showError(message) {
     dispatchResult.innerHTML = `<p class="error">${message}</p>`;
     pathResult.style.display = 'none';
 }
 
-// Simulate graph algorithm for finding nearest vehicle
-// This is a placeholder since we're performing this calculation on the server
-function findNearestVehicle(startZipCode, vehicleType) {
-    // This would implement Dijkstra's algorithm to find the shortest path
-    // to a node with an available vehicle of the requested type
-    // Since we're using the API approach, this is handled server-side
+// Get property name for the selected vehicle type
+function getVehicleProperty(vehicleType) {
+    switch(vehicleType) {
+        case 'Ambulance':
+            return 'ambulance_count';
+        case 'Fire Truck':
+            return 'fire_truck_count';
+        case 'Police':
+            return 'police_count';
+        default:
+            return null;
+    }
+}
+
+function calculatePath(fromZip, toZip) {
+    const distances = {};
+    const previous = {};
+    const unvisited = new Set();
+
+    // Initialize all distances to Infinity and unvisited set
+    Object.keys(distanceGraph).forEach(zip => {
+        distances[zip] = Infinity;
+        previous[zip] = null;
+        unvisited.add(zip);
+    });
+    distances[fromZip] = 0;
+
+    while (unvisited.size > 0) {
+        // Find the unvisited node with the smallest distance
+        let currentZip = Array.from(unvisited).reduce((minZip, zip) =>
+            distances[zip] < distances[minZip] ? zip : minZip
+        );
+
+        if (distances[currentZip] === Infinity) break; // All remaining are unreachable
+        if (currentZip === toZip) break; // Reached destination
+
+        unvisited.delete(currentZip);
+
+        // Check all neighbors of the current node
+        distanceGraph[currentZip].forEach(neighbor => {
+            if (unvisited.has(neighbor.zipCode)) {
+                const alt = distances[currentZip] + neighbor.distance;
+                if (alt < distances[neighbor.zipCode]) {
+                    distances[neighbor.zipCode] = alt;
+                    previous[neighbor.zipCode] = currentZip;
+                }
+            }
+        });
+    }
+
+    // Reconstruct the path
+    const path = [];
+    let current = toZip;
+
+    while (current) {
+        path.unshift(current);
+        current = previous[current];
+    }
+
+    // Return null if there's no path
+    if (path[0] !== fromZip) {
+        return null;
+    }
+
+    return {
+        path,
+        totalDistance: distances[toZip]
+    };
+}
+
+
+
+// Update findNearestVehicle function to be async
+async function findNearestVehicle(startZipCode, vehicleType) {
+    console.log(`Finding nearest ${vehicleType} from ${startZipCode}`);
+    
+    const vehicleProperty = getVehicleProperty(vehicleType);
+    if (!vehicleProperty) {
+        console.error('Invalid vehicle type');
+        return null;
+    }
+    
+    // Sort all locations by availability and distance
+    const availableLocations = availability
+        .filter(item => item.zip_code !== startZipCode && item[vehicleProperty] > 0)
+        .map(item => {
+            const distance = calculateDistance(startZipCode, item.zip_code);
+            return {
+                ...item,
+                distance
+            };
+        })
+        .sort((a, b) => a.distance - b.distance);
+
+    if (availableLocations.length > 0) {
+        const nearest = availableLocations[0];
+        const path = calculatePath(startZipCode, nearest.zip_code);
+        
+        return {
+            sourceZipCode: nearest.zip_code,
+            sourceLocationName: nearest.location_name,
+            destinationZipCode: startZipCode,
+            destinationLocationName: zipCodes.find(z => z.zip_code === startZipCode)?.location_name || 'Unknown',
+            path: path,
+            pathDetails: path.map(zip => ({
+                zipCode: zip,
+                locationName: zipCodes.find(z => z.zip_code === zip)?.location_name || 'Unknown'
+            })),
+            totalDistance: nearest.distance
+        };
+    }
+    
+    return null;
+}
+
+// Add retry logic for API calls
+async function fetchWithRetry(url, options, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+            }
+            return response;
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+        }
+    }
+}
+
+function calculateDistance(fromZip, toZip) {
+    // Check if we have direct connection in the graph
+    const directConnection = distanceGraph[fromZip]?.find(
+        connection => connection.zipCode === toZip
+    );
+    
+    if (directConnection) {
+        return directConnection.distance;
+    }
+
+    // If no direct connection, use Dijkstra's algorithm to find shortest path
+    const distances = {};
+    const previous = {};
+    const unvisited = new Set();
+
+    // Initialize distances
+    Object.keys(distanceGraph).forEach(zip => {
+        distances[zip] = Infinity;
+        previous[zip] = null;
+        unvisited.add(zip);
+    });
+    distances[fromZip] = 0;
+
+    while (unvisited.size > 0) {
+        // Find the unvisited node with minimum distance
+        let currentZip = Array.from(unvisited).reduce((minZip, zip) => 
+            distances[zip] < distances[minZip] ? zip : minZip
+        );
+
+        if (currentZip === toZip) {
+            break; // Found the destination
+        }
+
+        unvisited.delete(currentZip);
+
+        // Update distances to neighbors
+        distanceGraph[currentZip].forEach(neighbor => {
+            if (unvisited.has(neighbor.zipCode)) {
+                const alt = distances[currentZip] + neighbor.distance;
+                if (alt < distances[neighbor.zipCode]) {
+                    distances[neighbor.zipCode] = alt;
+                    previous[neighbor.zipCode] = currentZip;
+                }
+            }
+        });
+    }
+
+    return distances[toZip] === Infinity ? null : distances[toZip];
 }

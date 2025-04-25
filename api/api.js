@@ -1,4 +1,3 @@
-// api.js - Save this in a separate "api" folder
 const express = require('express');
 const mysql = require('mysql');
 const cors = require('cors');
@@ -12,25 +11,51 @@ app.use(express.json());
 // Database connection
 const db = mysql.createConnection({
     host: 'localhost',
-    user: 'root',
-    password: 'Vaibhav123',
-    database: 'emergencyDispatch'
+    user: '',
+    password: '',
+    database: 'emergencyDispatch',
+    // Add these options for better connection handling
+    reconnect: true,
+    connectTimeout: 10000,
+    waitForConnections: true
 });
 
-db.connect(err => {
-    if (err) {
-        console.error('Error connecting to the database:', err);
-        return;
+// Add connection error handling
+db.on('error', (err) => {
+    console.error('Database error:', err);
+    if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+        handleDisconnect();
+    } else {
+        throw err;
     }
-    console.log('Connected to MySQL database');
 });
+
+function handleDisconnect() {
+    db.connect((err) => {
+        if (err) {
+            console.error('Error reconnecting:', err);
+            setTimeout(handleDisconnect, 2000);
+        }
+    });
+}
 
 // GET all zip codes
 app.get('/api/zipcodes', (req, res) => {
+    if (!db || !db.state || db.state === 'disconnected') {
+        return res.status(500).json({ 
+            error: "Database connection not available",
+            details: "Please check database connectivity"
+        });
+    }
+
     const query = 'SELECT * FROM zip_codes';
     db.query(query, (err, results) => {
         if (err) {
-            return res.status(500).json({ error: err.message });
+            console.error('Database query error:', err);
+            return res.status(500).json({ 
+                error: "Database error",
+                details: err.message 
+            });
         }
         res.json(results);
     });
@@ -228,6 +253,32 @@ function findNearestWithVehicle(startZipCode, vehicleType, callback) {
         });
     });
 }
+
+// GET distances between ZIP codes
+app.get('/api/distances', (req, res) => {
+    const query = `
+        SELECT 
+            n.zip_id as from_zip,
+            n.neighbor_zip_id as to_zip,
+            z1.zip_code as from_zip_code,
+            z2.zip_code as to_zip_code,
+            n.distance
+        FROM neighbors n
+        JOIN zip_codes z1 ON n.zip_id = z1.zip_id
+        JOIN zip_codes z2 ON n.neighbor_zip_id = z2.zip_id
+    `;
+    
+    db.query(query, (err, results) => {
+        if (err) {
+            console.error('Database query error:', err);
+            return res.status(500).json({ 
+                error: "Database error",
+                details: err.message 
+            });
+        }
+        res.json(results);
+    });
+});
 
 app.listen(port, () => {
     console.log(`API server running on port ${port}`);
