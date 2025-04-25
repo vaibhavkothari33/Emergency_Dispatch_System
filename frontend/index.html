@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emergency Vehicle Dispatching System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Emergency Vehicle Dispatching System</h1>
+            <p>Track and dispatch emergency vehicles across zip codes</p>
+        </header>
+        
+        <main>
+            <div class="dispatch-form">
+                <h2>Request Emergency Vehicle</h2>
+                <form id="emergencyForm">
+                    <div class="form-group">
+                        <label for="zipCode">ZIP Code:</label>
+                        <select id="zipCode" name="zipCode" required>
+                            <option value="">Select ZIP Code</option>
+                            <!-- ZIP codes will be populated via JavaScript -->
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="vehicleType">Emergency Vehicle Type:</label>
+                        <select id="vehicleType" name="vehicleType" required>
+                            <option value="">Select Vehicle Type</option>
+                            <option value="Ambulance">Ambulance</option>
+                            <option value="Fire Truck">Fire Truck</option>
+                            <option value="Police">Police</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <button type="submit" id="dispatchBtn">Dispatch Vehicle</button>
+                    </div>
+                </form>
+            </div>
+            
+            <div class="result-container" id="resultContainer">
+                <h3>Dispatch Results</h3>
+                <div id="dispatchResult" class="result-content">
+                    <p class="no-results">No dispatches yet</p>
+                </div>
+                <div id="pathResult" class="path-content"></div>
+            </div>
+            
+            <div class="status-container">
+                <h3>Vehicle Availability</h3>
+                <table id="availabilityTable">
+                    <thead>
+                        <tr>
+                            <th>ZIP Code</th>
+                            <th>Location</th>
+                            <th>Ambulance</th>
+                            <th>Fire Truck</th>
+                            <th>Police</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Vehicle availability will be populated via JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </main>
+        
+        <footer>
+            <p>&copy; 2025 Emergency Vehicle Dispatching System</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
